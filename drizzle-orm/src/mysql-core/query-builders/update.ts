@@ -1,3 +1,4 @@
+import type { WithCacheConfig } from '~/cache/core/types.ts';
 import type { GetColumnData } from '~/column.ts';
 import { entityKind } from '~/entity.ts';
 import type { MySqlDialect } from '~/mysql-core/dialect.ts';
@@ -12,13 +13,19 @@ import type {
 } from '~/mysql-core/session.ts';
 import type { MySqlTable } from '~/mysql-core/table.ts';
 import { QueryPromise } from '~/query-promise.ts';
-import type { Query, SQL, SQLWrapper } from '~/sql/sql.ts';
+import { SelectionProxyHandler } from '~/selection-proxy.ts';
+import type { Placeholder, Query, SQL, SQLWrapper } from '~/sql/sql.ts';
 import type { Subquery } from '~/subquery.ts';
-import { mapUpdateSet, type UpdateSet } from '~/utils.ts';
+import { Table } from '~/table.ts';
+import { mapUpdateSet, type UpdateSet, type ValueOrArray } from '~/utils.ts';
+import type { MySqlColumn } from '../columns/common.ts';
+import { extractUsedTable } from '../utils.ts';
 import type { SelectedFieldsOrdered } from './select.types.ts';
 
 export interface MySqlUpdateConfig {
 	where?: SQL | undefined;
+	limit?: number | Placeholder;
+	orderBy?: (MySqlColumn | SQL | SQL.Aliased)[];
 	set: UpdateSet;
 	table: MySqlTable;
 	returning?: SelectedFieldsOrdered;
@@ -29,7 +36,8 @@ export type MySqlUpdateSetSource<TTable extends MySqlTable> =
 	& {
 		[Key in keyof TTable['$inferInsert']]?:
 			| GetColumnData<TTable['_']['columns'][Key], 'query'>
-			| SQL;
+			| SQL
+			| undefined;
 	}
 	& {};
 
@@ -120,9 +128,10 @@ export class MySqlUpdateBase<
 	// eslint-disable-next-line @typescript-eslint/no-unused-vars
 	TExcludedMethods extends string = never,
 > extends QueryPromise<MySqlQueryResultKind<TQueryResult, never>> implements SQLWrapper {
-	static readonly [entityKind]: string = 'MySqlUpdate';
+	static override readonly [entityKind]: string = 'MySqlUpdate';
 
 	private config: MySqlUpdateConfig;
+	protected cacheConfig?: WithCacheConfig;
 
 	constructor(
 		table: TTable,
@@ -173,6 +182,37 @@ export class MySqlUpdateBase<
 		return this as any;
 	}
 
+	orderBy(
+		builder: (updateTable: TTable) => ValueOrArray<MySqlColumn | SQL | SQL.Aliased>,
+	): MySqlUpdateWithout<this, TDynamic, 'orderBy'>;
+	orderBy(...columns: (MySqlColumn | SQL | SQL.Aliased)[]): MySqlUpdateWithout<this, TDynamic, 'orderBy'>;
+	orderBy(
+		...columns:
+			| [(updateTable: TTable) => ValueOrArray<MySqlColumn | SQL | SQL.Aliased>]
+			| (MySqlColumn | SQL | SQL.Aliased)[]
+	): MySqlUpdateWithout<this, TDynamic, 'orderBy'> {
+		if (typeof columns[0] === 'function') {
+			const orderBy = columns[0](
+				new Proxy(
+					this.config.table[Table.Symbol.Columns],
+					new SelectionProxyHandler({ sqlAliasedBehavior: 'alias', sqlBehavior: 'sql' }),
+				) as any,
+			);
+
+			const orderByArray = Array.isArray(orderBy) ? orderBy : [orderBy];
+			this.config.orderBy = orderByArray;
+		} else {
+			const orderByArray = columns as (MySqlColumn | SQL | SQL.Aliased)[];
+			this.config.orderBy = orderByArray;
+		}
+		return this as any;
+	}
+
+	limit(limit: number | Placeholder): MySqlUpdateWithout<this, TDynamic, 'limit'> {
+		this.config.limit = limit;
+		return this as any;
+	}
+
 	/** @internal */
 	getSQL(): SQL {
 		return this.dialect.buildUpdateQuery(this.config);
@@ -186,7 +226,15 @@ export class MySqlUpdateBase<
 	prepare(): MySqlUpdatePrepare<this> {
 		return this.session.prepareQuery(
 			this.dialect.sqlToQuery(this.getSQL()),
+			undefined,
+			undefined,
+			undefined,
 			this.config.returning,
+			{
+				type: 'insert',
+				tables: extractUsedTable(this.config.table),
+			},
+			this.cacheConfig,
 		) as MySqlUpdatePrepare<this>;
 	}
 

@@ -4,12 +4,16 @@ import { sql } from 'drizzle-orm';
 import { drizzle, type LibSQLDatabase } from 'drizzle-orm/libsql';
 import { migrate } from 'drizzle-orm/libsql/migrator';
 import { afterAll, beforeAll, beforeEach, expect, test } from 'vitest';
+import { skipTests } from '~/common';
 import { randomString } from '~/utils';
 import { anotherUsersMigratorTable, tests, usersMigratorTable } from './sqlite-common';
+import { TestCache, TestGlobalCache, tests as cacheTests } from './sqlite-common-cache';
 
 const ENABLE_LOGGING = false;
 
 let db: LibSQLDatabase;
+let dbGlobalCached: LibSQLDatabase;
+let cachedDb: LibSQLDatabase;
 let client: Client;
 
 beforeAll(async () => {
@@ -32,6 +36,8 @@ beforeAll(async () => {
 		},
 	});
 	db = drizzle(client, { logger: ENABLE_LOGGING });
+	cachedDb = drizzle(client, { logger: ENABLE_LOGGING, cache: new TestCache() });
+	dbGlobalCached = drizzle(client, { logger: ENABLE_LOGGING, cache: new TestGlobalCache() });
 });
 
 afterAll(async () => {
@@ -41,6 +47,10 @@ afterAll(async () => {
 beforeEach((ctx) => {
 	ctx.sqlite = {
 		db,
+	};
+	ctx.cachedSqlite = {
+		db: cachedDb,
+		dbGlobalCached,
 	};
 });
 
@@ -87,4 +97,10 @@ test('migrator : migrate with custom table', async () => {
 	await db.run(sql`drop table ${sql.identifier(customTable)}`);
 });
 
+skipTests([
+	'delete with limit and order by',
+	'update with limit and order by',
+]);
+
+cacheTests();
 tests();

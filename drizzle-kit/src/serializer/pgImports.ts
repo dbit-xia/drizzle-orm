@@ -1,5 +1,20 @@
 import { is } from 'drizzle-orm';
-import { AnyPgTable, isPgEnum, isPgSequence, PgEnum, PgSchema, PgSequence, PgTable } from 'drizzle-orm/pg-core';
+import {
+	AnyPgTable,
+	isPgEnum,
+	isPgMaterializedView,
+	isPgSequence,
+	isPgView,
+	PgEnum,
+	PgMaterializedView,
+	PgPolicy,
+	PgRole,
+	PgSchema,
+	PgSequence,
+	PgTable,
+	PgView,
+} from 'drizzle-orm/pg-core';
+import { Relations } from 'drizzle-orm/relations';
 import { safeRegister } from '../cli/commands/utils';
 
 export const prepareFromExports = (exports: Record<string, unknown>) => {
@@ -7,6 +22,11 @@ export const prepareFromExports = (exports: Record<string, unknown>) => {
 	const enums: PgEnum<any>[] = [];
 	const schemas: PgSchema[] = [];
 	const sequences: PgSequence[] = [];
+	const roles: PgRole[] = [];
+	const policies: PgPolicy[] = [];
+	const views: PgView[] = [];
+	const matViews: PgMaterializedView[] = [];
+	const relations: Relations[] = [];
 
 	const i0values = Object.values(exports);
 	i0values.forEach((t) => {
@@ -22,19 +42,44 @@ export const prepareFromExports = (exports: Record<string, unknown>) => {
 			schemas.push(t);
 		}
 
+		if (isPgView(t)) {
+			views.push(t);
+		}
+
+		if (isPgMaterializedView(t)) {
+			matViews.push(t);
+		}
+
 		if (isPgSequence(t)) {
 			sequences.push(t);
 		}
+
+		if (is(t, PgRole)) {
+			roles.push(t);
+		}
+
+		if (is(t, PgPolicy)) {
+			policies.push(t);
+		}
+
+		if (is(t, Relations)) {
+			relations.push(t);
+		}
 	});
 
-	return { tables, enums, schemas, sequences };
+	return { tables, enums, schemas, sequences, views, matViews, roles, policies, relations };
 };
 
 export const prepareFromPgImports = async (imports: string[]) => {
-	let tables: AnyPgTable[] = [];
-	let enums: PgEnum<any>[] = [];
-	let schemas: PgSchema[] = [];
-	let sequences: PgSequence[] = [];
+	const tables: AnyPgTable[] = [];
+	const enums: PgEnum<any>[] = [];
+	const schemas: PgSchema[] = [];
+	const sequences: PgSequence[] = [];
+	const views: PgView[] = [];
+	const roles: PgRole[] = [];
+	const policies: PgPolicy[] = [];
+	const matViews: PgMaterializedView[] = [];
+	const relations: Relations[] = [];
 
 	const { unregister } = await safeRegister();
 	for (let i = 0; i < imports.length; i++) {
@@ -47,8 +92,23 @@ export const prepareFromPgImports = async (imports: string[]) => {
 		enums.push(...prepared.enums);
 		schemas.push(...prepared.schemas);
 		sequences.push(...prepared.sequences);
+		views.push(...prepared.views);
+		matViews.push(...prepared.matViews);
+		roles.push(...prepared.roles);
+		policies.push(...prepared.policies);
+		relations.push(...prepared.relations);
 	}
 	unregister();
 
-	return { tables: Array.from(new Set(tables)), enums, schemas, sequences };
+	return {
+		tables: Array.from(new Set(tables)),
+		enums,
+		schemas,
+		sequences,
+		views,
+		matViews,
+		roles,
+		policies,
+		relations,
+	};
 };

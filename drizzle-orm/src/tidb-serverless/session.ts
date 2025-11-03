@@ -1,4 +1,6 @@
 import type { Connection, ExecuteOptions, FullResult, Tx } from '@tidbcloud/serverless';
+import { type Cache, NoopCache } from '~/cache/core/index.ts';
+import type { WithCacheConfig } from '~/cache/core/types.ts';
 import { Column } from '~/column.ts';
 
 import { entityKind, is } from '~/entity.ts';
@@ -22,13 +24,19 @@ const executeRawConfig = { fullResult: true } satisfies ExecuteOptions;
 const queryConfig = { arrayMode: true } satisfies ExecuteOptions;
 
 export class TiDBServerlessPreparedQuery<T extends MySqlPreparedQueryConfig> extends MySqlPreparedQuery<T> {
-	static readonly [entityKind]: string = 'TiDBPreparedQuery';
+	static override readonly [entityKind]: string = 'TiDBPreparedQuery';
 
 	constructor(
 		private client: Tx | Connection,
 		private queryString: string,
 		private params: unknown[],
 		private logger: Logger,
+		cache: Cache,
+		queryMetadata: {
+			type: 'select' | 'update' | 'delete' | 'insert';
+			tables: string[];
+		} | undefined,
+		cacheConfig: WithCacheConfig | undefined,
 		private fields: SelectedFieldsOrdered | undefined,
 		private customResultMapper?: (rows: unknown[][]) => T['execute'],
 		// Keys that were used in $default and the value that was generated for them
@@ -36,7 +44,7 @@ export class TiDBServerlessPreparedQuery<T extends MySqlPreparedQueryConfig> ext
 		// Keys that should be returned, it has the column with all properries + key from object
 		private returningIds?: SelectedFieldsOrdered,
 	) {
-		super();
+		super(cache, queryMetadata, cacheConfig);
 	}
 
 	async execute(placeholderValues: Record<string, unknown> | undefined = {}): Promise<T['execute']> {
@@ -46,7 +54,9 @@ export class TiDBServerlessPreparedQuery<T extends MySqlPreparedQueryConfig> ext
 
 		const { fields, client, queryString, joinsNotNullableMap, customResultMapper, returningIds, generatedIds } = this;
 		if (!fields && !customResultMapper) {
-			const res = await client.execute(queryString, params, executeRawConfig) as FullResult;
+			const res = await this.queryWithCache(queryString, params, async () => {
+				return await client.execute(queryString, params, executeRawConfig) as FullResult;
+			});
 			const insertId = res.lastInsertId ?? 0;
 			const affectedRows = res.rowsAffected ?? 0;
 			// for each row, I need to check keys from
@@ -75,7 +85,9 @@ export class TiDBServerlessPreparedQuery<T extends MySqlPreparedQueryConfig> ext
 			return res;
 		}
 
-		const rows = await client.execute(queryString, params, queryConfig) as unknown[][];
+		const rows = await this.queryWithCache(queryString, params, async () => {
+			return await client.execute(queryString, params, queryConfig) as unknown[][];
+		});
 
 		if (customResultMapper) {
 			return customResultMapper(rows);
@@ -91,16 +103,18 @@ export class TiDBServerlessPreparedQuery<T extends MySqlPreparedQueryConfig> ext
 
 export interface TiDBServerlessSessionOptions {
 	logger?: Logger;
+	cache?: Cache;
 }
 
 export class TiDBServerlessSession<
 	TFullSchema extends Record<string, unknown>,
 	TSchema extends TablesRelationalConfig,
 > extends MySqlSession<TiDBServerlessQueryResultHKT, TiDBServerlessPreparedQueryHKT, TFullSchema, TSchema> {
-	static readonly [entityKind]: string = 'TiDBServerlessSession';
+	static override readonly [entityKind]: string = 'TiDBServerlessSession';
 
 	private logger: Logger;
 	private client: Tx | Connection;
+	private cache: Cache;
 
 	constructor(
 		private baseClient: Connection,
@@ -112,6 +126,7 @@ export class TiDBServerlessSession<
 		super(dialect);
 		this.client = tx ?? baseClient;
 		this.logger = options.logger ?? new NoopLogger();
+		this.cache = options.cache ?? new NoopCache();
 	}
 
 	prepareQuery<T extends MySqlPreparedQueryConfig = MySqlPreparedQueryConfig>(
@@ -120,12 +135,20 @@ export class TiDBServerlessSession<
 		customResultMapper?: (rows: unknown[][]) => T['execute'],
 		generatedIds?: Record<string, unknown>[],
 		returningIds?: SelectedFieldsOrdered,
+		queryMetadata?: {
+			type: 'select' | 'update' | 'delete' | 'insert';
+			tables: string[];
+		},
+		cacheConfig?: WithCacheConfig,
 	): MySqlPreparedQuery<T> {
 		return new TiDBServerlessPreparedQuery(
 			this.client,
 			query.sql,
 			query.params,
 			this.logger,
+			this.cache,
+			queryMetadata,
+			cacheConfig,
 			fields,
 			customResultMapper,
 			generatedIds,
@@ -137,6 +160,14 @@ export class TiDBServerlessSession<
 		const querySql = this.dialect.sqlToQuery(query);
 		this.logger.logQuery(querySql.sql, querySql.params);
 		return this.client.execute(querySql.sql, querySql.params) as Promise<T[]>;
+	}
+
+	override async count(sql: SQL): Promise<number> {
+		const res = await this.execute<{ rows: [{ count: string }] }>(sql);
+
+		return Number(
+			res['rows'][0]['count'],
+		);
 	}
 
 	override async transaction<T>(
@@ -164,7 +195,7 @@ export class TiDBServerlessTransaction<
 	TFullSchema extends Record<string, unknown>,
 	TSchema extends TablesRelationalConfig,
 > extends MySqlTransaction<TiDBServerlessQueryResultHKT, TiDBServerlessPreparedQueryHKT, TFullSchema, TSchema> {
-	static readonly [entityKind]: string = 'TiDBServerlessTransaction';
+	static override readonly [entityKind]: string = 'TiDBServerlessTransaction';
 
 	constructor(
 		dialect: MySqlDialect,
